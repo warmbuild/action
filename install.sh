@@ -14,7 +14,7 @@
 # Run it again to update: it replaces the CLI and restarts the cache on the new version.
 set -eu
 
-version="1.12.4"
+version="1.13.0"
 repo="warmbuild/action"
 base="${WARMBUILD_DOWNLOAD_URL:-https://github.com/$repo/releases/download/v$version}"
 latest="${WARMBUILD_LATEST_URL:-https://github.com/$repo/releases/latest/download}"
@@ -28,6 +28,9 @@ fail() {
 }
 
 path_choice=ask
+# Everything from here runs inside main, called on the last line: a download cut short
+# (`curl | sh`) then runs nothing instead of half the script.
+main() {
 for arg in "$@"; do
   case "$arg" in
     --add-to-path) path_choice=yes ;;
@@ -60,11 +63,15 @@ if [ "$(uname -s)" != "Darwin" ] && [ "${WARMBUILD_ANY_OS:-}" != "1" ]; then
 fi
 
 if ! command -v node > /dev/null 2>&1; then
-  fail "Node.js 20 or newer is required and was not found. Install it (https://nodejs.org, or: brew install node) and run this again."
+  fail "Node.js 22.15 or newer is required and was not found. Install it (https://nodejs.org, or: brew install node) and run this again."
 fi
-node_major="$(node -p 'process.versions.node.split(".")[0]' 2> /dev/null || echo 0)"
-if [ "$node_major" -lt 20 ] 2> /dev/null; then
-  fail "Node.js 20 or newer is required; found $(node --version). Update it (https://nodejs.org, or: brew upgrade node) and run this again."
+# Objects travel compressed with zstd, which node:zlib has from 22.15: an older Node could not
+# read what CI wrote.
+node_new_enough="$(node -p '
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  major > 22 || (major === 22 && minor >= 15) ? 1 : 0' 2> /dev/null || echo 0)"
+if [ "$node_new_enough" != "1" ]; then
+  fail "Node.js 22.15 or newer is required; found $(node --version). Update it (https://nodejs.org, or: brew upgrade node) and run this again."
 fi
 # The real path, so a version manager's per-shell shim does not end up in the wrapper.
 node_path="$(node -p 'require("fs").realpathSync(process.execPath)')"
@@ -107,6 +114,8 @@ if [ -f "$home/warmbuild.pid" ] || [ -f "$home/repos.json" ] || [ -f "$HOME/Libr
 fi
 
 mkdir -p "$bin"
+# The home holds the compiled results of private source: this user's only.
+chmod 700 "$home" 2> /dev/null || true
 # Replace atomically: a running server keeps its open file until `warmbuild start` restarts it.
 cp "$tmp/warmbuild.mjs" "$bin/warmbuild.mjs.new"
 mv -f "$bin/warmbuild.mjs.new" "$bin/warmbuild.mjs"
@@ -179,3 +188,6 @@ fi
 if [ "$new_shell" = "1" ]; then
   printf '\nOpen a new terminal (or run: exec %s) to call it as warmbuild.\n' "$(basename "${SHELL:-zsh}")"
 fi
+}
+
+main "$@"

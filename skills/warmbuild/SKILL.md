@@ -13,14 +13,19 @@ is optional: builds work the same without it.
 
 | Command | What it does |
 | --- | --- |
-| `curl -fsSL https://warmbuild.dev/install.sh \| sh` | Installs `~/.warmbuild/bin/warmbuild` (macOS, Node 20+), and in a repository also starts the cache. Without a terminal it does not sign in or edit the shell profile; it prints those steps. The daemon updates itself daily; `warmbuild update` does it now. |
-| `warmbuild login` | GitHub device flow; the user enters a code in a browser. Stores a read-only token in the macOS Keychain. Interactive: the user runs it. |
+| `curl -fsSL https://warmbuild.dev/install.sh \| sh` | Installs `~/.warmbuild/bin/warmbuild` (macOS, Node 22.15+), and in a repository also starts the cache. Without a terminal it does not sign in or edit the shell profile; it prints those steps. The daemon updates itself daily; `warmbuild update` does it now. |
+| `warmbuild login` | GitHub device flow: prints a URL and a code, then waits up to 15 minutes for the user to enter the code in a browser. Run it in the background (or let the user run it) and show them both. Stores a read-only token in the macOS Keychain. |
 | `warmbuild start` | In a repository: starts the cache server (LaunchAgent), writes `~/.warmbuild/warmbuild.xcconfig`, and maps every worktree of the repository the way CI maps its checkout, so builds in any worktree (also several at once) share CI's keys. Once per repository. |
 | `warmbuild stop` | Stops the server and empties the xcconfig; builds then run without the cache. |
+| `warmbuild wait [--timeout <s>]` | Blocks until the cache serves builds: exit 0 ready, 124 still not ready after the timeout (default 900 s), 1 at once when the cache is off. `warmbuild wait && xcodebuild …`. |
 | `warmbuild link [dir]` | Links the repository at `dir` (default `.`) too, and points `/tmp/warmbuild/src` at this checkout. `#filePath` and the debugger resolve through that link; the daemon also moves it to the checkout of each `xcodebuild` it sees start. |
 | `warmbuild run -- xcodebuild …` | One build with its own short-lived server, without the LaunchAgent. |
 
 `warmbuild` may not be on PATH; `~/.warmbuild/bin/warmbuild` is the same command.
+
+`start --quiet` and `stop --quiet` print one line (`Warmbuild: on (read-only)`, `Warmbuild: off`, …).
+Exit codes for every command: 0 ok, 1 error (`status`: off), 2 wrong command line, 124 gave up
+waiting. `warmbuild run` exits with the build's code.
 
 ## Building with the cache
 
@@ -36,31 +41,42 @@ XCODE_XCCONFIG_FILE="$HOME/.warmbuild/warmbuild.xcconfig" xcodebuild …
 Passing it is harmless when the project includes it too, so always pass it. When a build hits little,
 `warmbuild status` names the likely cause and `warmbuild doctor` lists every check with its fix. Keys equal CI's only
 for the same Xcode version, configuration, destination and architecture as the CI job that filled
-the cache. A `-derivedDataPath` or worktree below `/tmp` (or `/private/tmp`) loses hits: use
-Xcode's default DerivedData or a folder in the home directory (e.g. `~/Library/Caches/<name>/dd`). `#filePath` is `/tmp/warmbuild/src/…` in every
+the cache. Xcode 26 also puts the DerivedData path into Swift keys: Swift compilations hit only when
+DerivedData is at the same path as on CI (Clang modules hit anywhere; Xcode 27 does not have this
+limit). A `-derivedDataPath` or worktree below `/tmp` (or `/private/tmp`) loses hits: use
+Xcode's default DerivedData or a folder in the home directory (e.g. `~/Library/Caches/<name>/dd`).
+A new worktree needs no setup: the daemon picks it up within seconds; one whose path has a space
+cannot be mapped (`unmappable` in `status --json`) and builds without CI's keys. `#filePath` is `/tmp/warmbuild/src/…` in every
 worktree; tests that find files through it read the checkout that link points at.
 
 ## Status: hits and misses
 
 `warmbuild status` prints whether the cache is on, the account, the linked repositories and their
-projects, the last build of all worktrees together and each worktree's own last build. Exit code 0 means on, 1 means off. `warmbuild status --json` prints:
+projects, the last build of all worktrees together and each worktree's own last build. Exit code 0 means on, 1 means off. `warmbuild status --json` prints (schema version 1: fields may be added; `schemaVersion` goes up only when one is renamed, removed or changes meaning):
 
 | Field | |
 | --- | --- |
-| `running` | the server answers and the xcconfig points at it |
+| `schemaVersion`, `generatedAt` | `1`; when the report was made (ms) |
+| `running`, `pid` | the server answers and the xcconfig points at it; the daemon's pid or `null` |
+| `version`, `xcconfig` | the CLI version; the xcconfig's path |
 | `mode` | `read-only` or `read-write` |
 | `account`, `tokenExpiresAt` | signed-in account, or `null` |
 | `sourceRoot` | where `/tmp/warmbuild/src` points |
 | `checkouts`, `unmappable` | every mapped worktree; worktrees with a space in their path, which cannot be mapped |
 | `repositories`, `projects`, `conflicts` | linked repositories (git directories); project name → directory below the checkout root; names at two places in as many worktrees each, not mapped |
-| `worktrees` | each worktree: `path`, `counted` (has its own socket, so its builds are counted apart), `lastBuild` (`hits`, `misses`, `hitRate`, `startedAt`, `endedAt`) or `null` |
-| `lastBuild` | all worktrees together: `hits`, `misses`, `hitRate` (0–1), `remoteHits` (from Warmbuild), `localHits` (this Mac), `mbDown`, `mbUp`, `httpFailures`, `startedAt`, `endedAt` (ms) |
+| `worktrees` | each worktree: `path`, `counted` (has its own socket, so its builds are counted apart), `lastBuild` (`hits`, `misses`, `hitRate`, `startedAt`, `endedAt`) or `null`, `disk` (`bytes`, `derivedData[]`: its DerivedData folders, measured every 10 min) or `null` |
+| `lastBuild` | all worktrees together: `hits`, `misses`, `hitRate` (0–1), `remoteHits` (from Warmbuild), `localHits` (this Mac), `mbDown`, `mbUp`, `httpFailures`, `failedRequests` (by reason: `network`, `token`, `key`, `account`, `server`), `startedAt`, `endedAt` (ms) |
+| `localTier` | the server's store: `path`, `bytes`, `measuredAt` (`null` before the first measurement), `lastGcAt` and `maxBytes` (the last sweep and its cap; `null` before the first), `freeBytes` on its disk now, `lowDisk` below 10 GiB free |
+| `diagnosis` | when the cache is off or the last build hit little: `id`, `detail`, `fix`; else `null` |
 
 The last build is the last burst of cache traffic, split at 20 s without lookups. A miss is a
 compilation whose key is in neither this Mac's cache nor Warmbuild's. Keys differ when the Xcode
 version, SDK, configuration, destination, build settings or sources differ from what CI built, and
 for code CI has not built yet. `httpFailures` above 0 means Warmbuild could not be reached or
-refused (not signed in, account not approved); the build then used only this Mac's cache.
+refused; `failedRequests` says why (`token`: run `warmbuild login`; `account`: not approved or
+over quota; `network`: offline). The build then used only this Mac's cache. For a target that
+missed, `warmbuild why-miss <target>` compares it with the CI jobs that built it. Disk full: the
+largest `worktrees[].disk` are DerivedData folders of worktrees; deleting them is safe.
 
 ## Test selection
 
@@ -106,6 +122,6 @@ repository, unknown job).
 
 - Never read, print or log the token: not with `security`, not from `~/.config/warmbuild`, not
   from the environment. `warmbuild status` shows the account.
-- `warmbuild login` and `--write` are the user's to run.
+- The user enters the `warmbuild login` code; `--write` (uploading from this Mac) is the user's call.
 - When a Warmbuild command fails, or a build reports a compilation cache or remote service error,
   `warmbuild stop` turns the cache off and the build runs as a plain local build.

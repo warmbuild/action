@@ -16,6 +16,20 @@ if (!pid) process.exit(0);
 // Waits for the uploads, then the server reports the build.
 spawnSync(process.execPath, [client, "stop", "--pid", pid], { stdio: "inherit", timeout: 170_000 });
 
+// SourcePackages for the next fresh runner: once per set of pins, after the build's own uploads.
+if (state("packages") !== "false" && state("url")) {
+  const token = (process.env.INPUT_TOKEN ?? "").trim();
+  const build = (process.env.INPUT_BUILD ?? "").trim();
+  const env = {
+    ...process.env,
+    ...(token ? { WARMBUILD_TOKEN: token } : {}),
+    ...(build ? { WARMBUILD_BUILD: build } : {}),
+  };
+  const workspace = state("workspace") || process.cwd();
+  const save = ["packages", "save", "--url", state("url"), "--workspace", workspace];
+  spawnSync(process.execPath, [client, ...save], { env, stdio: "inherit", timeout: 180_000 });
+}
+
 const log = state("log");
 const stats = state("stats");
 let s;
@@ -26,20 +40,33 @@ try {
 }
 
 const mb = (n) => `${(n / 1e6).toFixed(1)} MB`;
+// The share of Xcode's cache lookups that hit, for the summary's heading; none without lookups.
+const hitShare = (hits, misses) => {
+  if (hits + misses === 0) return "";
+  return ` · ${Math.round((hits / (hits + misses)) * 100)}% of compile tasks from the cache`;
+};
 if (s) {
-  const hits = s.kvLocalHits + s.kvRemoteHits + s.kvBundleHits;
+  const hits = s.kvLocalHits + s.kvRemoteHits;
   const line = `hits ${hits}, misses ${s.kvMisses}, down ${mb(s.bytesDown)}, up ${mb(s.bytesUp)}, requests ${s.httpRequests}, lost writes ${s.lostWrites}`;
   console.log(`Warmbuild: ${line}`);
   console.log(JSON.stringify(s));
+  // A writer refused writes only when the account's storage quota is used up: the build passes,
+  // but the next one gets nothing new from it. Said where the job's page shows it.
+  if (s.deniedWrites > 0) {
+    const why = "the storage quota is used up, so this build's results were not saved";
+    console.log(`::warning title=Warmbuild::${why}. See https://warmbuild.dev/app/`);
+  }
   if (process.env.GITHUB_STEP_SUMMARY) {
     appendFileSync(
       process.env.GITHUB_STEP_SUMMARY,
       [
-        "### Warmbuild",
+        `### [Warmbuild](https://warmbuild.dev/)${hitShare(hits, s.kvMisses)}`,
         "",
         "| Hits | Misses | Downloaded | Uploaded | HTTP requests | Lost writes |",
         "| ---: | ---: | ---: | ---: | ---: | ---: |",
         `| ${hits} | ${s.kvMisses} | ${mb(s.bytesDown)} | ${mb(s.bytesUp)} | ${s.httpRequests} | ${s.lostWrites} |`,
+        "",
+        "History per repository, trends and findings: [dashboard](https://warmbuild.dev/app/).",
         "",
       ].join("\n"),
     );

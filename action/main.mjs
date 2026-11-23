@@ -20,7 +20,9 @@ const paths = {
 const input = (name) => (process.env[`INPUT_${name.toUpperCase()}`] ?? "").trim();
 const append = (file, line) => {
   try {
-    appendFileSync(process.env[file], `${line}\n`);
+    // One line per entry: a newline in a value (a test name from a pull request) would start
+    // another output or environment variable.
+    appendFileSync(process.env[file], `${String(line).replace(/[\r\n]+/g, " ")}\n`);
   } catch {}
 };
 const output = (name, value) => append("GITHUB_OUTPUT", `${name}=${value}`);
@@ -38,6 +40,7 @@ mkdirSync(home, { recursive: true });
 state("started", String(Date.now()));
 state("url", input("url"));
 state("workspace", input("workspace") || process.env.GITHUB_WORKSPACE || process.cwd());
+state("packages", input("packages") || "true");
 state("report", input("report") || "true");
 state("report-budget", input("report-budget") || "90");
 
@@ -104,7 +107,11 @@ function trySelectTests() {
 
 const token = input("token");
 if (token) console.log(`::add-mask::${token}`);
-const env = { ...process.env, ...(token ? { WARMBUILD_TOKEN: token } : {}) };
+const env = {
+  ...process.env,
+  ...(token ? { WARMBUILD_TOKEN: token } : {}),
+  ...(input("build") ? { WARMBUILD_BUILD: input("build") } : {}),
+};
 const common = ["--socket", paths.socket];
 selectTests();
 
@@ -174,6 +181,14 @@ const lines = flags.stdout
     return `${setting.slice(0, at)} = ${setting.slice(at + 1)}`;
   });
 writeFileSync(paths.xcconfig, [...(previous ? [`#include "${previous}"`] : []), ...lines, ...typecheckLines(), ""].join("\n"));
+
+// SourcePackages, before xcodebuild resolves them. A restore that takes this long would cost
+// more than resolving does.
+if (input("packages") !== "false") {
+  const workspace = input("workspace") || process.env.GITHUB_WORKSPACE || process.cwd();
+  const restore = ["packages", "restore", "--url", input("url"), "--workspace", workspace];
+  spawnSync(process.execPath, [client, ...restore], { env, stdio: "inherit", timeout: 90_000 });
+}
 
 append("GITHUB_ENV", `XCODE_XCCONFIG_FILE=${paths.xcconfig}`);
 output("enabled", "true");
