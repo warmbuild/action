@@ -14,7 +14,7 @@
 # Run it again to update: it replaces the CLI and restarts the cache on the new version.
 set -eu
 
-version="1.13.0"
+version="1.13.1"
 repo="warmbuild/action"
 base="${WARMBUILD_DOWNLOAD_URL:-https://github.com/$repo/releases/download/v$version}"
 latest="${WARMBUILD_LATEST_URL:-https://github.com/$repo/releases/latest/download}"

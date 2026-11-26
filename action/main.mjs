@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const here = import.meta.dirname;
@@ -82,8 +82,9 @@ function trySelectTests() {
       ...(input("url") ? ["--url", input("url")] : []),
       "--sample",
       input("select-tests-sample") || "0.05",
-      ...lines("select-tests-ignore").flatMap((r) => ["--ignore", r]),
-      ...lines("select-tests-always").flatMap((a) => ["--always", a]),
+      // `--flag=value`: a value that starts with "-" would be read as another flag.
+      ...lines("select-tests-ignore").map((pattern) => `--ignore=${pattern}`),
+      ...lines("select-tests-always").map((id) => `--always=${id}`),
       ...(input("select-tests-scheme") ? ["--scheme", input("select-tests-scheme")] : []),
       ...(process.env.GITHUB_STEP_SUMMARY ? ["--summary", process.env.GITHUB_STEP_SUMMARY] : []),
     ],
@@ -107,6 +108,43 @@ function trySelectTests() {
 
 const token = input("token");
 if (token) console.log(`::add-mask::${token}`);
+
+// GitHub gives a pull request from a fork no OIDC token and no secrets, so there is nothing to
+// sign in with. Said once, as a notice (nothing is wrong), instead of a failed request per lookup.
+function isForkPullRequest() {
+  if (!/^pull_request/.test(process.env.GITHUB_EVENT_NAME ?? "")) return false;
+  try {
+    const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+    return event.pull_request?.head?.repo?.full_name !== event.pull_request?.base?.repo?.full_name;
+  } catch {
+    return false;
+  }
+}
+
+function skipWithoutCredentials() {
+  if (token || process.env.ACTIONS_ID_TOKEN_REQUEST_URL) return;
+  if (isForkPullRequest()) {
+    const why = "fork pull request: GitHub gives it no OIDC token, so this build runs without the cache";
+    console.log(`::notice title=Warmbuild::${why}`);
+    const summary = `### Warmbuild\n\nNot used: ${why}. Pushes to the default branch fill the cache.\n`;
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY ?? "/dev/null", summary);
+    output("enabled", "false");
+    output("tests", "all");
+    process.exit(0);
+  }
+  disable("the job has no OIDC token: add `permissions: id-token: write` to the job (or the workflow), or pass a `token` input");
+}
+skipWithoutCredentials();
+
+// A checkout below the workspace (actions/checkout `path:`) needs the `workspace` input: without
+// it the Swift package pins and the CI report look in the wrong folder and find nothing.
+function warnAboutMisplacedWorkspace() {
+  const workspace = input("workspace") || process.env.GITHUB_WORKSPACE || process.cwd();
+  if (existsSync(join(workspace, ".git"))) return;
+  const why = `no git checkout at ${workspace}; if actions/checkout used \`path:\`, set the Action's \`workspace:\` input to that folder, or the Swift package cache and the CI report find nothing`;
+  console.log(`::warning title=Warmbuild::${why}`);
+}
+warnAboutMisplacedWorkspace();
 const env = {
   ...process.env,
   ...(token ? { WARMBUILD_TOKEN: token } : {}),

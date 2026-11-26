@@ -26,7 +26,11 @@ if (state("packages") !== "false" && state("url")) {
     ...(build ? { WARMBUILD_BUILD: build } : {}),
   };
   const workspace = state("workspace") || process.cwd();
+  // Without the main step's start time this job's packages cannot be told from older ones: none
+  // are saved.
+  const since = state("started") || String(Number.MAX_SAFE_INTEGER);
   const save = ["packages", "save", "--url", state("url"), "--workspace", workspace];
+  save.push("--since", since);
   spawnSync(process.execPath, [client, ...save], { env, stdio: "inherit", timeout: 180_000 });
 }
 
@@ -44,6 +48,12 @@ const mb = (n) => `${(n / 1e6).toFixed(1)} MB`;
 const hitShare = (hits, misses) => {
   if (hits + misses === 0) return "";
   return ` · ${Math.round((hits / (hits + misses)) * 100)}% of compile tasks from the cache`;
+};
+// A build that only filled the cache: nothing hit, and what it compiled went up. Said, so a first
+// run's 0% reads as the start, not as the cache failing.
+const firstRunNote = (hits, counters) => {
+  if (hits > 0 || counters.bytesUp === 0) return [];
+  return ["This build filled the cache: the next builds of this code read what it compiled.", ""];
 };
 if (s) {
   const hits = s.kvLocalHits + s.kvRemoteHits;
@@ -66,6 +76,7 @@ if (s) {
         "| ---: | ---: | ---: | ---: | ---: | ---: |",
         `| ${hits} | ${s.kvMisses} | ${mb(s.bytesDown)} | ${mb(s.bytesUp)} | ${s.httpRequests} | ${s.lostWrites} |`,
         "",
+        ...firstRunNote(hits, s),
         "History per repository, trends and findings: [dashboard](https://warmbuild.dev/app/).",
         "",
       ].join("\n"),

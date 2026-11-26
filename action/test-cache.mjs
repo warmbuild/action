@@ -17,7 +17,14 @@ const append = (file, line) => {
 };
 const output = (name, value) => append("GITHUB_OUTPUT", `${name}=${value}`);
 
-const args = [input("ARGS"), process.env.WARMBUILD_ONLY_TESTING ?? ""].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+// Values the workflow writes go as `--flag=value`: as a separate word, a value that starts with
+// "-" (every -only-testing / -skip-testing argument) is read as another flag and the command fails.
+
+// The workflow's own arguments are the same on every run, so a target they narrow is still
+// recorded; test selection's (from the main step) make a partial run.
+const workflowArgs = input("ARGS");
+const selectionArgs = (process.env.WARMBUILD_ONLY_TESTING ?? "").trim();
+const args = [workflowArgs, selectionArgs].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 const everything = (why) => {
   console.log(`::warning title=Warmbuild::test cache unavailable (${why}); every test runs`);
   output("tests", "all");
@@ -36,13 +43,11 @@ const r = spawnSync(
     "plan",
     ...(input("DERIVED_DATA") ? ["--derived-data", input("DERIVED_DATA")] : []),
     ...(input("XCTESTRUN") ? ["--xctestrun", input("XCTESTRUN")] : []),
-    "--destination",
-    input("DESTINATION"),
-    "--args",
-    args,
+    `--destination=${input("DESTINATION")}`,
+    `--args=${selectionArgs}`,
+    `--workflow-args=${workflowArgs}`,
     ...(input("WORKSPACE") ? ["--workspace", input("WORKSPACE")] : []),
-    "--extra-key",
-    input("EXTRA_KEY"),
+    `--extra-key=${input("EXTRA_KEY")}`,
     ...(input("CACHE_TESTS") === "false" ? ["--off"] : []),
     ...(input("URL") ? ["--url", input("URL")] : []),
     "--out",

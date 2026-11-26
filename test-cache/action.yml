@@ -13,7 +13,7 @@ inputs:
     description: "The -destination the tests run on, e.g. id=<udid>; its runtime and device type are part of each key"
     required: true
   args:
-    description: "The workflow's own -only-testing / -skip-testing arguments (test selection's are added already)"
+    description: "The workflow's own -only-testing / -skip-testing arguments, the same on every run (part of the keys of the targets they narrow; test selection's are added already)"
     required: false
     default: ""
   cache-tests:

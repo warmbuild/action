@@ -18,6 +18,9 @@ const append = (file, line) => {
 };
 const output = (name, value) => append("GITHUB_OUTPUT", `${name}=${value}`);
 
+// Values the workflow writes go as `--flag=value`: as a separate word, a value that starts with
+// "-" (every -only-testing / -skip-testing argument) is read as another flag and the command fails.
+
 // What the plan says; null when the client could not plan.
 const planned = (stdout) => {
   try {
@@ -48,18 +51,13 @@ try {
       "test-cache",
       "step",
       "plan",
-      "--name",
-      name,
-      "--command",
-      command,
+      `--name=${name}`,
+      `--command=${command}`,
       ...(input("PACKAGE_PATH") ? ["--package-path", input("PACKAGE_PATH")] : []),
-      "--paths",
-      input("PATHS"),
-      "--destination",
-      input("DESTINATION"),
+      `--paths=${input("PATHS")}`,
+      `--destination=${input("DESTINATION")}`,
       ...(input("WORKSPACE") ? ["--workspace", input("WORKSPACE")] : []),
-      "--extra-key",
-      input("EXTRA_KEY"),
+      `--extra-key=${input("EXTRA_KEY")}`,
       ...(input("CACHE_STEPS") === "false" ? ["--off"] : []),
       ...(input("URL") ? ["--url", input("URL")] : []),
       "--out",
